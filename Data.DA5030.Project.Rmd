@@ -1,0 +1,405 @@
+---
+title: "Data.DA5030.Project.Rmd"
+author: ""
+date: "2025-11-24"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,         
+  warning = FALSE,    
+  message = FALSE,     
+  error = FALSE,       
+  fig.width = 7,        
+  fig.height = 5,
+  fig.align = "center"
+)
+
+```
+
+# CRISP-DM: Business Understanding
+Employee attrition refers to employees departing the organization, either via resignation or involuntary separation. Employers care about attrition because it drives recruitment costs, interrupts team processes, and ultimately impacts productivity. The business problem addressed in this project is to identify which employees are most likely to leave so that managers can take proactive measures to mitigate attrition. There is value in predicting attrition, as it would allow the organization to plan staffing and reduce hiring costs, and manage the loss of important talent. Important HR questions are, “Which employees are at the highest risk of leaving?” and “Which factors, such as job satisfaction, overtime and workload, or years at the organization, are associated with attrition?”
+
+# CRISP-DM: Data Understanding
+This project employs the IBM HR Analytics Employee Attrition data set that is available on Kaggle. While fictional, the data set is created by IBM data scientists, who sought to understand why employees quit or remained. The data set consists of approximately 1,470 employee observations and 35 variables that describe demographic information, job roles, work environment, performance, and satisfaction. The variables include both numerical variables (Age, MonthlyIncome, YearsAtCompany, etc.) as well as categorical variables (JobRole, Department, MaritalStatus, etc.). Several variables are coded as ordinal values ranging from 1 to 4 or 1 to 5, indicating levels of satisfaction, performance, completion of education, and work-life balance. The target variable is Attrition (i.e., whether an employee quit the company or not - "Yes" or "No").
+
+
+```{r}
+# Libraries
+library(tidyverse)
+library(caret)
+library(e1071)
+library(pROC)
+library(randomForest)
+library(ipred)
+library(xgboost)
+```
+
+## Load the dataset
+```{r}
+# Load the dataset
+data <- read.csv(
+  "https://raw.githubusercontent.com/Alekypeesu/Employee-Attrition-Analytics/refs/heads/main/WA_Fn-UseC_-HR-Employee-Attrition.csv",
+  stringsAsFactors = FALSE,
+  header = TRUE
+)
+
+# View structure
+glimpse(data)
+
+```
+## Summary of the target variable (Attrition)
+```{r}
+# Target Distribution
+table(data$Attrition)
+prop.table(table(data$Attrition)) * 100
+
+```
+## Summary of all variables
+```{r}
+## Summary
+summary(data)
+
+```
+## Bar chart of Attrition
+```{r}
+## Plot-attrition
+ggplot(data, aes(x = Attrition)) +
+  geom_bar(fill = "steelblue") +
+  labs(title = "Distribution of Employee Attrition", x = "Attrition", y = "Count")
+
+```
+## Monthly Income by Attrition (Density Plot)
+```{r}
+## Plot-income-attrition
+
+ggplot(data, aes(x = MonthlyIncome, fill = Attrition)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "Income Distribution by Attrition", x = "Monthly Income")
+
+```
+## Data Quality Assessment
+The raw dataset indicates that there are no missing values, and all variables load correctly. There are no duplicate employee records, which confirms the consistency of the dataset at the row level. Despite this, several numeric variables exhibit significant skewness, particularly MonthlyIncome, DailyRate, MonthlyRate, and the Years-related columns. High skew of numeric variables can affect algorithms that assume normality or rely on distance measures. There are also clear outliers in income and rate variables because of the wide range between the minimum and maximum values. The primary concern is the class imbalance in the target variable, which shows that approximately 16% of employees reduced their numbers due to attrition, "Yes," and 84% due to "No." These findings guide the cleaning and preparation steps ahead.
+
+## Missing values
+```{r}
+colSums(is.na(data))
+
+```
+
+## Duplicate rows
+```{r}
+## Duplicates
+sum(duplicated(data))
+
+```
+
+## Class imbalance check
+```{r}
+## Class-imbalance
+table(data$Attrition)
+prop.table(table(data$Attrition)) * 100
+
+```
+```{r}
+## Select numeric columns only
+numeric_vars <- data %>% dplyr::select(where(is.numeric))
+
+## Skewness-check
+apply(numeric_vars, 2, e1071::skewness)
+
+```
+
+## Check skewness of numeric columns
+```{r}
+## Skewness-check
+apply(numeric_vars, 2, e1071::skewness)
+
+```
+
+## Findings on Data Quality Assessment
+The dataset has no missing values, which indicates that all variables are complete. There are no duplicate records, meaning that each employee is observed only once. Outlier checks indicate there are numerous extreme values in numerical features, for example, MonthlyIncome, NumCompaniesWorked, PerformanceRating, TotalWorkingYears, and the variables related to the employee's promotion. These outliers are potentially problematic for distance-based models and will need capping or transformation later. Many of the numerical variables are also quite skewed, MonthlyIncome, MonthlyRate, PerformanceRating, YearsAtCompany, and YearsSinceLastPromotion being particularly skewed. The target variable is imbalanced, with only about 16% of attrition as "Yes". Given this imbalance, the modeling pipeline applies caret’s built-in up-sampling during cross-validation. Up-sampling balances the minority class inside each resampling fold without creating synthetic observations or altering the original dataset.
+
+# Data Preparation
+Categorical variables were converted into factors to ensure correct handling by classification algorithms. After the train–test split, dummy variables were generated using caret::dummyVars() with full rank encoding to avoid multicollinearity. All numeric predictors were standardized using caret::preProcess() with centering and scaling learned only from the training set to prevent data leakage. 
+
+## Train–Test Split + Preprocessing
+```{r}
+set.seed(5030)
+
+# Train-test split
+
+train_index <- createDataPartition(data$Attrition, p = 0.8, list = FALSE)
+train_data <- data[train_index, ]
+test_data  <- data[-train_index, ]
+
+# Convert target to factor
+
+train_data$Attrition <- factor(train_data$Attrition, levels = c("No", "Yes"))
+test_data$Attrition  <- factor(test_data$Attrition,  levels = c("No", "Yes"))
+
+# Convert categorical variables to factors
+
+cat_vars <- c("BusinessTravel","Department","EducationField","Gender",
+"JobRole","MaritalStatus","OverTime")
+
+train_data[cat_vars] <- lapply(train_data[cat_vars], factor)
+test_data[cat_vars]  <- lapply(test_data[cat_vars], factor)
+
+# Remove non-informative variables
+
+train_data <- train_data %>% select(-EmployeeCount, -StandardHours, -Over18, -EmployeeNumber)
+test_data  <- test_data  %>% select(-EmployeeCount, -StandardHours, -Over18, -EmployeeNumber)
+
+
+dummies <- dummyVars(Attrition ~ ., data = train_data, fullRank = TRUE)
+
+train_x <- data.frame(predict(dummies, newdata = train_data))
+test_x  <- data.frame(predict(dummies, newdata = test_data))
+
+# Standardize numeric variables
+
+preproc <- preProcess(train_x, method = c("center", "scale"))
+train_x <- predict(preproc, train_x)
+test_x  <- predict(preproc, test_x)
+
+# Add target variable back
+
+train_final <- data.frame(Attrition = train_data$Attrition, train_x)
+test_final  <- data.frame(Attrition = test_data$Attrition,  test_x)
+
+```
+## Data Preparation Summary
+The final training set contains 1,177 rows and 53 features, while the test set contains 293 rows and the same 53 features. Class imbalance is handled using up-sampling within trainControl(), which balances the “Yes” cases within each resampling fold.. Scaling is required for SVM and logistic regression because these algorithms rely on distance-based optimization.
+
+# CRISP-DM: Modeling
+```{r}
+ctrl <- trainControl(
+method = "cv",
+number = 5,
+classProbs = TRUE,
+summaryFunction = twoClassSummary,
+savePredictions = "final",
+sampling = "up"
+)
+
+get_metrics <- function(true, pred_class, pred_prob) {
+cm <- confusionMatrix(pred_class, true, positive = "Yes")
+roc_obj <- roc(true, pred_prob, levels = c("No", "Yes"))
+c(
+Accuracy = cm$overall["Accuracy"],
+Precision = cm$byClass["Precision"],
+Recall = cm$byClass["Recall"],
+F1 = cm$byClass["F1"],
+AUC = auc(roc_obj)
+)
+}
+
+```
+## Logistic Regression
+```{r}
+set.seed(5030)
+model_logit <- train(
+Attrition ~ ., data = train_final,
+method = "glm",
+family = "binomial",
+trControl = ctrl,
+metric = "ROC"
+)
+
+pred_logit_class <- predict(model_logit, test_final)
+pred_logit_prob  <- predict(model_logit, test_final, type = "prob")[, "Yes"]
+
+metrics_logit <- get_metrics(test_final$Attrition, pred_logit_class, pred_logit_prob)
+metrics_logit
+
+
+```
+## Random Forest
+```{r}
+set.seed(5030)
+model_rf <- train(
+Attrition ~ ., data = train_final,
+method = "rf",
+trControl = ctrl,
+tuneGrid = data.frame(mtry = c(3,5,7,10)),
+metric = "ROC"
+)
+
+pred_rf_class <- predict(model_rf, test_final)
+pred_rf_prob  <- predict(model_rf, test_final, type = "prob")[, "Yes"]
+
+metrics_rf <- get_metrics(test_final$Attrition, pred_rf_class, pred_rf_prob)
+metrics_rf
+
+
+```
+
+## SVM (Radial Kernel)
+```{r}
+set.seed(5030)
+model_svm <- train(
+Attrition ~ ., data = train_final,
+method = "svmRadial",
+trControl = ctrl,
+tuneLength = 5,
+metric = "ROC"
+)
+
+pred_svm_class <- predict(model_svm, test_final)
+pred_svm_prob  <- predict(model_svm, test_final, type = "prob")[, "Yes"]
+
+metrics_svm <- get_metrics(test_final$Attrition, pred_svm_class, pred_svm_prob)
+metrics_svm
+
+
+```
+
+# Bagging
+Bagging (Bootstrap Aggregating) involves constructing numerous decision trees from diverse bootstrapped training samples. Each sample is made by selecting rows randomly and with replacement, so that each tree will see slightly different data. The ultimate prediction is completed by averaging the probabilities together or using a majority vote. Bagging decreases variance and stabilizes the predictions of an individual decision tree, which is inherently unstable. Although Random Forest is an advanced form of bagging, this section demonstrates a classic bagged tree model for clarity.
+
+```{r}
+set.seed(5030)
+model_bag <- bagging(
+Attrition ~ .,
+data = train_final,
+nbagg = 50
+)
+
+pred_bag_class <- predict(model_bag, test_final, type = "class")
+pred_bag_prob  <- predict(model_bag, test_final, type = "prob")[, "Yes"]
+
+metrics_bag <- get_metrics(test_final$Attrition, pred_bag_class, pred_bag_prob)
+metrics_bag
+
+
+```
+The bagging model performs better than logistic regression in accuracy and precision. Its accuracy is close to Random Forest, although Random Forest still shows stronger AUC (discrimination) performance.
+
+# Boosting
+The training and testing sets are created using stratified sampling to preserve the Yes/No ratio of the target variable. This ensures the model learns realistic proportions of attrition. An 80/20 split is applied because it is widely used and balances training size with generalization.
+
+```{r}
+train_matrix <- xgb.DMatrix(
+data = as.matrix(train_final %>% select(-Attrition)),
+label = as.numeric(train_final$Attrition == "Yes")
+)
+
+test_matrix <- xgb.DMatrix(
+data = as.matrix(test_final %>% select(-Attrition)),
+label = as.numeric(test_final$Attrition == "Yes")
+)
+
+params <- list(
+objective = "binary:logistic",
+eval_metric = "auc",
+eta = 0.1,
+max_depth = 3,
+subsample = 1,
+colsample_bytree = 1
+)
+
+set.seed(5030)
+model_xgb <- xgb.train(
+params = params,
+data = train_matrix,
+nrounds = 150
+)
+
+pred_xgb_prob <- predict(model_xgb, test_matrix)
+pred_xgb_class <- factor(ifelse(pred_xgb_prob >= 0.5, "Yes", "No"),
+levels = c("No","Yes"))
+
+metrics_xgb <- get_metrics(test_final$Attrition, pred_xgb_class, pred_xgb_prob)
+metrics_xgb
+
+
+```
+
+The XGBoost model achieved an accuracy of approximately 0.85, a precision of 0.55, a recall of 0.23, an F1 score of 0.33, and an AUC of 0.78. The model performs well in separating “stay” vs “leave” cases (as reflected by the AUC), although recall remains modest due to the difficulty of identifying rare attrition cases.
+
+
+# Model Evaluation & Comparison
+```{r}
+results_table <- rbind(
+Logistic_Regression = metrics_logit,
+Random_Forest       = metrics_rf,
+SVM_Radial          = metrics_svm,
+Bagging             = metrics_bag,
+XGBoost             = metrics_xgb
+)
+
+results_table
+
+
+```
+## Models Comparision
+Random Forest is the strongest model in overall accuracy and AUC, showing it captures complex patterns in the data. However, Logistic Regression provides better recall, meaning it identifies more employees who are truly at risk of leaving. SVM offers a middle ground with more balanced metrics.
+
+## ROC Curve Comparison Plot
+The ROC curves show that all models outperform random guessing, with Random Forest achieving the highest AUC. Logistic Regression has the best sensitivity (recall), meaning it identifies more at-risk employees even if precision is lower.
+```{r}
+roc_logit <- roc(test_final$Attrition, pred_logit_prob)
+roc_rf    <- roc(test_final$Attrition, pred_rf_prob)
+roc_svm   <- roc(test_final$Attrition, pred_svm_prob)
+roc_bag   <- roc(test_final$Attrition, pred_bag_prob)
+roc_xgb   <- roc(test_final$Attrition, pred_xgb_prob)
+
+plot(roc_logit, col="blue",  lwd=2, main="ROC Curve Comparison")
+plot(roc_rf,    col="red",   lwd=2, add=TRUE)
+plot(roc_svm,   col="green", lwd=2, add=TRUE)
+plot(roc_bag,   col="purple",lwd=2, add=TRUE)
+plot(roc_xgb,   col="orange",lwd=2, add=TRUE)
+
+legend("bottomright",
+legend=c("Logistic","Random Forest","SVM","Bagging","XGBoost"),
+col=c("blue","red","green","purple","orange"),
+lwd=2)
+
+```
+## Interpretation
+The models show varying prediction strengths for employee attrition. The logistic regression model has the highest recall. Recall indicates the model's ability to predict more employees who are at a true risk of leaving. Random Forest has the best accuracy and precision overall, which means that if it decides that an employee is at risk, that employee is genuinely at a high risk of leaving. The SVM exhibits the highest AUC among all models, meaning it provides the best discrimination between attrition and non-attrition. Logistic Regression shows the highest sensitivity (recall), meaning it captures more true attrition cases.
+
+
+# Stacked Ensemble
+```{r}
+logit_prob <- predict(model_logit, test_final, type = "prob")[, "Yes"]
+rf_prob    <- predict(model_rf,    test_final, type = "prob")[, "Yes"]
+svm_prob   <- predict(model_svm,   test_final, type = "prob")[, "Yes"]
+
+ensemble_prob <- (logit_prob + rf_prob + svm_prob) / 3
+
+ensemble_class <- factor(ifelse(ensemble_prob >= 0.5, "Yes", "No"),
+levels = c("No","Yes"))
+
+metrics_ensemble <- get_metrics(test_final$Attrition, ensemble_class, ensemble_prob)
+metrics_ensemble
+
+
+```
+## Ensemble Performance Interpretation
+The ensemble achieved an accuracy of about 0.80 and an AUC of 0.81. Its recall (0.62) matches Logistic Regression and SVM, meaning it identifies substantially more employees at risk of leaving compared to Random Forest or XGBoost. Precision (0.41) reflects moderate correctness of positive predictions. Overall, the ensemble achieves a strong balance of sensitivity and specificity.
+
+# CRISP-DM Evaluation
+The SVM Radial model provides the strongest discrimination (highest AUC), while Random Forest yields the highest accuracy. Logistic Regression has the highest recall, identifying the most at-risk employees. The ensemble combines the strengths of multiple models and provides a balanced performance across metrics. SVM offers a middle-ground performance in terms of precision and recall. The bagging and XGBoost are also good performers, but not always better than the primary models. The stacked ensemble produces one of the most balanced results. It has a combination of the positive features of the individual models, resulting in a high AUC and an improved precision-recall balance. 
+Recall is highly valued from an HR viewpoint since failing to notice an employee at risk may result in the turnover cost being unforeseen. A model that has a high recall assists HR in intervening at an early stage. It is also important to be precise since HR would only want to invest in the employees who require support. Therefore, the ensemble or Logistic Regression can be a better choice in cases when it is necessary to provide an early warning of risks, whereas Random Forest can be chosen in cases when it is necessary to demonstrate the overall predictive accuracy.
+
+
+# CRISP-DM Deployment 
+The models point out a number of crucial factors associated with attrition rates of employees, which include overtime, poor job satisfaction, minimal career growth of career and reduced levels of income. These trends assist HR in knowing where employees are not doing well and where they need to put efforts to improve. To apply these findings to practice, HR can keep an eye on employees who fit into the high-risk categories determined by the models, e.g., those who work overtime on a regular basis or have low satisfaction scores. The work-life balance policies need to be revised to minimize the prolonged overtime and burnout. Moreover, high-turnover jobs should receive specific retention activities, including better promotion opportunities or more rigorous training, or better managerial support. The model can also put employees who trigger the red flag in early-intervention programs, such as stay interviews or career coaching. Overall, the implementation of the model will provide HR with a valuable tool that is able to identify the risk at an earlier stage, allocate the resources more efficiently, and build particular strategies that can improve the well-being of the employees and minimize expensive turnover.
+
+# References
+Subhash, P. (2017). IBM HR analytics employee attrition & performance. Www.kaggle.com. https://raw.githubusercontent.com/Alekypeesu/Employee-Attrition-Analytics/refs/heads/main/WA_Fn-UseC_-HR-Employee-Attrition.csv
+
+
+
+
+
+
+
+
